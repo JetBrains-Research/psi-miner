@@ -1,33 +1,29 @@
-import astminer.storage.MetaDataStorage
-import astminercompatibility.store
 import com.intellij.openapi.project.Project
-import com.intellij.psi.PsiElement
+import com.intellij.openapi.vfs.VirtualFile
 import filter.Filter
 import labelextractor.LabelExtractor
 import me.tongfei.progressbar.ProgressBar
 import org.slf4j.LoggerFactory
-import psi.Parser
-import psi.ParserException
 import psi.language.JavaHandler
 import psi.language.KotlinHandler
 import psi.language.PhpHandler
-import psi.printTree
 import psi.transformations.PsiTreeTransformation
-import storage.Storage
+import storage.StorageManager
 import java.io.File
-import java.util.concurrent.Executors
-import kotlin.io.path.Path
+import java.lang.Thread.sleep
+import java.util.concurrent.BlockingQueue
+import java.util.concurrent.LinkedBlockingQueue
+import kotlin.concurrent.thread
 
 class Pipeline(
     val language: Language,
     private val repositoryOpener: RepositoryOpener,
-    psiTreeTransformations: List<PsiTreeTransformation>,
+    val psiTreeTransformations: List<PsiTreeTransformation>,
     private val filters: List<Filter>,
     val labelExtractor: LabelExtractor,
-    val storage: Storage,
+    val storageManager: StorageManager,
     val collectMetadata: Boolean = false
 ) {
-    private var metaDataStorage: MetaDataStorage? = null
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -36,8 +32,6 @@ class Pipeline(
         Language.Kotlin -> KotlinHandler()
         Language.PHP -> PhpHandler()
     }
-
-    private val parser = Parser(languageHandler, psiTreeTransformations, labelExtractor.granularityLevel)
 
     private fun checkFolderIsDataset(folder: File): Boolean {
         val folderDirNames = folder.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: return false
@@ -49,12 +43,7 @@ class Pipeline(
         numThreads: Int = 1,
         printTrees: Boolean = false
     ) {
-        if (collectMetadata) {
-            val metadataPath = Path(storage.outputDirectory.path, "metadata").toString()
-            metaDataStorage = MetaDataStorage(metadataPath)
-        }
         require(numThreads > 0) { "Amount threads must be positive." }
-        println("Parser configuration:\n$parser")
         val isDataset = checkFolderIsDataset(inputDirectory)
         if (isDataset) {
             println("Dataset structure is detected.")
@@ -74,8 +63,6 @@ class Pipeline(
             println("No dataset found. Process all sources from passed path")
             processRepository(inputDirectory, null, numThreads, printTrees)
         }
-        metaDataStorage?.close()
-        metaDataStorage = null
     }
 
     private fun processRepository(
@@ -92,41 +79,51 @@ class Pipeline(
         }
     }
 
-    private fun processPsiTree(psiRoot: PsiElement, holdout: Dataset? = null, printTrees: Boolean = false): Boolean {
-        if (filters.any { !it.validateTree(psiRoot, languageHandler) }) return false
-        val labeledTree = labelExtractor.extractLabel(psiRoot, languageHandler) ?: return false
-        synchronized(storage) {
-            storage.store(labeledTree, holdout)
-            metaDataStorage?.store(labeledTree, holdout)
-            if (printTrees) labeledTree.root.printTree()
-        }
-        return true
-    }
-
     private fun processProject(
         project: Project,
         holdout: Dataset?,
-        numThreads: Int = 1,
-        printTrees: Boolean = false
+        numThreads: Int,
+        printTrees: Boolean
     ) {
-        val projectFiles = extractProjectFiles(project, language)
-
-        val progressBar = ProgressBar(project.name, projectFiles.size.toLong())
-
-        val service = Executors.newFixedThreadPool(numThreads)
-        val futures = projectFiles.map { file ->
-            service.submit {
-                try {
-                    parser.parseFile(file, project) { processPsiTree(it, holdout, printTrees) }
-                } catch (exception: ParserException) {
-                    logger.error("Error while parsing ${exception.filepath}")
-                } finally {
-                    progressBar.step()
-                }
+        val filesQueue: BlockingQueue<VirtualFile> = LinkedBlockingQueue(extractProjectFiles(project, language))
+        val projectProcessors = List(numThreads) {
+            ProjectProcessor(
+                languageHandler = languageHandler,
+                psiTreeTransformations = psiTreeTransformations,
+                filters = filters,
+                labelExtractor = labelExtractor,
+                storage = storageManager.createStorage(),
+                collectMetadata = collectMetadata
+            )
+        }
+        val trackingThread = trackProgress(project.name, filesQueue)
+        val workers = projectProcessors.map { projectProcessor ->
+            thread(start = true) {
+                projectProcessor.processProject(project, filesQueue, holdout, printTrees)
             }
         }
-        service.shutdown()
-        futures.forEach { it.get() }
-        progressBar.close()
+        workers.forEach { it.join() }
+        trackingThread.interrupt()
+        projectProcessors.forEach(ProjectProcessor::closeMetadataStorage)
+    }
+
+    private fun trackProgress(projectName: String, filesQueue: BlockingQueue<VirtualFile>): Thread {
+        val initialSize = filesQueue.size.toLong()
+        val progressBar = ProgressBar("Processing $projectName", initialSize)
+        return thread(start = true) {
+            try {
+                while (!Thread.currentThread().isInterrupted) {
+                    progressBar.stepTo(initialSize - filesQueue.size)
+                    sleep(TRACKING_INTERVAL)
+                }
+            } catch (_: InterruptedException) {
+            } finally {
+                progressBar.stepTo(initialSize - filesQueue.size)
+            }
+        }
+    }
+
+    companion object {
+        const val TRACKING_INTERVAL = 60_000L
     }
 }

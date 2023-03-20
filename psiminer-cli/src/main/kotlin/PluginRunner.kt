@@ -11,6 +11,7 @@ import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
 import org.apache.log4j.PropertyConfigurator
 import org.slf4j.LoggerFactory
+import storage.StorageManager
 import kotlin.system.exitProcess
 
 class PluginRunner : ApplicationStarter {
@@ -84,26 +85,29 @@ class PsiExtractor : CliktCommand() {
             exitProcess(0)
         }
 
-        val storage = config.storage.createStorage(output, config.language)
+        val storageManager = StorageManager(
+            createStorage = { config.storage.createStorage(it, config.language) },
+            baseOutputDirectory = output
+        )
         val pipeline = Pipeline(
             language = config.language,
             repositoryOpener = config.preprocessing.createPreprocessing(),
             psiTreeTransformations = config.treeTransformers.map { it.createTreeTransformation(config.language) },
             filters = config.filters.map { it.createFilter() },
             labelExtractor = config.labelExtractor.createProblem(),
-            storage = storage,
+            storageManager = storageManager,
             collectMetadata = config.collectMetadata
         )
 
         try {
             logger.warn("Start processing data.")
             pipeline.extract(dataset, config.numThreads, config.printTrees)
-            storage.printStatistic()
-            storage.close()
+            storageManager.printStoragesStatistic()
+            storageManager.closeStorages()
         } catch (e: Exception) {
             logger.error("Failed with ${e::class.simpleName}: ${e.message}")
             logger.error(e.stackTraceToString())
-            storage.close()
+            storageManager.closeStorages()
         } finally {
             exitProcess(0)
         }
