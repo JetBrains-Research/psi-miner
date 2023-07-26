@@ -27,6 +27,9 @@ allprojects {
         maven("https://packages.jetbrains.team/maven/p/big-code/bigcode")
     }
 
+    val utilitiesProjectVersion = "1.0"
+    val utilitiesProjectId = "org.jetbrains.research"
+
     dependencies {
         implementation("org.jetbrains.kotlin:kotlin-stdlib:1.7.21")
         implementation("org.jetbrains.kotlinx:kotlinx-serialization-core:1.4.1")
@@ -42,6 +45,10 @@ allprojects {
         testImplementation("org.junit.jupiter:junit-jupiter:5.9.0")
 
         detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.18.1")
+
+        implementation("$utilitiesProjectId:plugin-utilities-core:$utilitiesProjectVersion")
+        implementation("$utilitiesProjectId:plugin-utilities-test:$utilitiesProjectVersion")
+        implementation("$utilitiesProjectId:plugin-utilities-python:$utilitiesProjectVersion")
     }
 
     configurations.all {

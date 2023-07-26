@@ -1,0 +1,15 @@
+{
+  "filters": [],
+  "label": {"name": "method name"},
+  "storage": {
+    "name": "json graph"
+  },
+
+  "language": "Python",
+  "tree transformations": [
+    {"name": "exclude whitespace"}
+  ],
+  "numThreads": 4,
+  "printTrees": false,
+  "collectMetadata": true
+}
